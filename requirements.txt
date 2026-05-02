@@ -1,0 +1,22 @@
+matplotlib
+scikit-learn
+scikit-image
+opencv-python
+yacs
+joblib
+natsort
+h5py
+tqdm
+einops
+gdown
+addict
+future
+lmdb
+numpy
+pyyaml
+requests
+scipy
+tb-nightly # 这个包不重要，可用tensorboard代替
+yapf
+lpips
+timm

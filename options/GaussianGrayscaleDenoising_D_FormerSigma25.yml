@@ -1,0 +1,141 @@
+# general settings
+name: GaussianGrayDenoising_DFormerSigma25 # 注意name会影响模型恢复训练加载的权重
+model_type: ImageCleanModel 
+scale: 1
+num_gpu: 1  # set num_gpu: 0 for cpu mode  非常影响显存占用（单卡训练设置为1）
+manual_seed: 100
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: TrainSet
+    type: Dataset_GaussianDenoising # 数据处理中会加噪
+    sigma_type: constant
+    sigma_range: 25
+    in_ch: 1    ## Grayscale image 红外图
+    dataroot_gt: /home/caoxinyu/UNet-based/infrare_data/train/IR700_train
+    dataroot_lq: none # 自动合成
+    geometric_augs: true
+
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 8  # 线程数
+    batch_size_per_gpu: 8  # 每个GPU的batch_size 16
+
+    # 渐进训练策略（batch_size和patch_size随迭代次数动态改变）
+    ### -------------Progressive training--------------------------
+    # mini_batch_sizes: [16,10,8,4,2,2]             # Batch size per gpu   
+    # iters: [92000,64000,48000,36000,36000,24000]
+    # gt_size: 384   # Max patch size for progressive training
+    # gt_sizes: [128,160,192,256,320,384]  # Patch sizes for progressive training.
+    ### ------------------------------------------------------------
+    
+    # 不采用渐进训练策略
+    ### ------- Training on single fixed-patch size 128x128---------
+    mini_batch_sizes: [8]   # mini_batch_size与batch_size_per_gpu有什么关系
+    iters: [300000] 
+    gt_size: 64       # 沈师兄用的64  128
+    gt_sizes: [64]
+    ### ------------------------------------------------------------
+
+    dataset_enlarge_ratio: 100 # 
+    prefetch_mode: ~
+
+  val:
+    name: ValSet
+    type: Dataset_GaussianDenoising
+    sigma_test: 25
+    in_ch: 1    ## Grayscale image
+    dataroot_gt: /home/caoxinyu/UNet-based/infrare_data/valid/IR700_test 
+    dataroot_lq: none
+    io_backend:
+      type: disk
+
+##### network structures #####
+network_g:
+  type: Difformer   # 单输入单输出
+  inp_channels: 1
+  out_channels: 1
+  dim: 48
+  num_blocks: [2, 4, 4]
+  spatial_num_blocks: [2,4,4,6]
+  num_refinement_blocks: 4
+  heads: [1, 2, 4, 8]
+  window_size: [16,16,16,16]
+  ffn_expansion_factor: 2.66
+  bias: False
+  LayerNorm_type: BiasFree
+  dual_pixel_task: False
+
+
+# path 
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~ # 恢复中断训练
+
+# training settings
+train:
+  total_iter: 300000
+  warmup_iter: -1 # no warm up
+  use_grad_clip: true
+
+  # Split 300k iterations into two cycles. 
+  # 1st cycle: fixed 3e-4 LR for 92k iters. 
+  # 2nd cycle: cosine annealing (3e-4 to 1e-6) for 208k iters.
+  scheduler:
+    type: CosineAnnealingRestartCyclicLR
+    periods: [92000, 208000]       
+    restart_weights: [1,1]
+    eta_mins: [0.0003,0.000001]   
+  
+  mixing_augs:
+    mixup: true
+    mixup_beta: 1.2
+    use_identity: true
+
+  optim_g:
+    type: AdamW
+    lr: !!float 3e-4   # 沈师兄用2e-4  
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.999]
+  
+  ##### losses（这里可以定义多个损失） ####
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1
+    reduction: mean
+
+# validation settings
+val:
+  window_size: 8
+  val_freq: !!float 4e3  #4e3
+  save_img: false
+  rgb2bgr: true
+  use_image: false
+  max_minibatch: 8
+  
+  # 指标计算
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 1000
+  save_checkpoint_freq: !!float 4e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

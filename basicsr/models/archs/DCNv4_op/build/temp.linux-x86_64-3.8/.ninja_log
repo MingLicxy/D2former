@@ -1,0 +1,4 @@
+# ninja log v5
+0	16024	1733122618849885973	/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/build/temp.linux-x86_64-3.8/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/src/vision.o	119e174640497ccc
+0	98690	1733122701484116045	/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/build/temp.linux-x86_64-3.8/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/src/cuda/dcnv4_cuda.o	2e7a7fcd29070cb
+0	251503	1733122854296256270	/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/build/temp.linux-x86_64-3.8/home/caoxinyu/UNet-based/AMIR-main/model/DCNv4_op/src/cuda/flash_deform_attn_cuda.o	dd0e7a23ca38c3f0

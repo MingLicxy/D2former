@@ -1,0 +1,187 @@
+import numpy as np
+import os
+import argparse
+from tqdm import tqdm
+
+import torch.nn as nn
+import torch
+import torch.nn.functional as F
+
+#TODO 改动点一
+from basicsr.models.archs.SwinIR_arch import SwinIR
+
+from skimage import img_as_ubyte
+from natsort import natsorted
+from glob import glob
+import utils
+from pdb import set_trace as stx
+
+########### 第一步：加噪函数 ###########
+def add_mixed_noise_tensor(img_lq, noise_level, seed=None):
+    """
+    添加混合噪声（高斯 + 条纹）
+    img_lq: torch.Tensor, shape [C, H, W] 或 [B, C, H, W]
+    noise_level: 1 或 2
+    seed: int, 可选，设置随机种子以复现结果
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    if img_lq.dim() == 3:
+        img_lq = img_lq.unsqueeze(0)  # [1, C, H, W]
+
+    B, C, H, W = img_lq.size()
+
+    # ---------- Gaussian Noise ----------
+    if noise_level == 1:
+        sigma = 10 / 255.0
+    elif noise_level == 2:
+        sigma = 15 / 255.0
+    else:
+        raise ValueError("noise_level must be 1 or 2")
+    
+    gauss = torch.randn_like(img_lq) * sigma
+    img_lq = img_lq + gauss
+
+    # ---------- Stripe Noise ----------
+    for b in range(B):
+        for c in range(C):
+
+            if noise_level == 1:
+                # Level 1: 仅列条纹 ±4
+                col_amp = 4 / 255.0
+                col_bias = (torch.rand(1, W) * 2 - 1) * col_amp
+                stripe = col_bias.expand(H, W)
+
+            elif noise_level == 2:
+                # Level 2: 列 ±5%，行 ±1%
+                col_amp = 5 / 255.0
+                row_amp = 2 / 255.0
+
+                col_bias = (torch.rand(1, W) * 2 - 1) * col_amp
+                row_bias = (torch.rand(H, 1) * 2 - 1) * row_amp
+
+                stripe = col_bias.expand(H, W) + row_bias.expand(H, W)
+
+            img_lq[b, c] += stripe
+
+    return img_lq.squeeze(0) if B == 1 else img_lq
+
+###TODO 获取预测结果，并储存于指定文件夹
+################################ 用于获取可视化结果 ################################
+
+parser = argparse.ArgumentParser(description='Gasussian Infrare Denoising')
+
+parser.add_argument('--input_dir', default='/home/caoxinyu/UNet-based/infrare_data/test', type=str, help='Directory of validation images')
+
+#TODO 改动点二
+parser.add_argument('--result_dir', default='/home/caoxinyu/UNet-based/Xformer-main/results/SwinIR', type=str, help='Directory for results')
+########### 第二步：添加输入参数 ###########
+parser.add_argument('--level', default='1', type=str, help='Noise Levels, 1 or 2')
+
+args = parser.parse_args()
+
+####### Load model options #######
+import yaml
+try:
+    from yaml import CLoader as Loader
+except ImportError:
+    from yaml import Loader
+
+
+#TODO 改动点三
+opt_str = r"""
+  type: SwinIR   # 单输入单输出
+  img_size: 64
+  patch_size: 1
+  in_chans: 1
+  embed_dim: 48  # 96
+  depths: [4, 4, 4, 4]      #[6, 6, 6, 6]
+  num_heads: [4, 4, 4, 4]           #[6, 6, 6, 6]
+  window_size: 8
+  mlp_ratio: 4.
+  qkv_bias: True
+  qk_scale: None
+"""
+opt = yaml.safe_load(opt_str)
+network_type = opt.pop('type')
+##########################################
+
+########### 第三步：获取噪声级别 ###########
+level = np.int_(args.level)
+
+factor = 8 #TODO
+
+datasets = ['DLS-NUC-100', 'ESPOL-FIR', 'Flir', 'IR100', 'IR700_test']
+
+print("Compute results for noise level",level)
+
+#TODO 改动点四： 创建模型
+model_restoration = SwinIR(**opt)    
+
+########### 第四步：加载权重 ###########
+if level == 1:
+    #TODO 根据log文件自由选取
+    weights = '/home/caoxinyu/UNet-based/Xformer-main/experiments/GaussianGrayDenoising_SwinIRFPNLevel1/models/net_g_latest.pth'
+elif level == 2:
+    weights = '/home/caoxinyu/UNet-based/Xformer-main/experiments/GaussianGrayDenoising_SwinIRFPNLevel2/models/net_g_latest.pth'
+
+checkpoint = torch.load(weights)
+model_restoration.load_state_dict(checkpoint['params'])
+
+print("===>Testing using weights: ",weights)
+print("------------------------------------------------")
+model_restoration.cuda()
+model_restoration = nn.DataParallel(model_restoration)
+model_restoration.eval()
+
+for dataset in datasets:
+    # 输入图像路径：'/home/caoxinyu/UNet-based/infrare_data/test/DLS-NUC-100'
+    inp_dir = os.path.join(args.input_dir, dataset) 
+    files = natsorted(
+                          glob(os.path.join(inp_dir, '*.png')) 
+                        + glob(os.path.join(inp_dir, '*.jpg'))
+                        + glob(os.path.join(inp_dir, '*.bmp'))
+                        )
+    # 输出图像路径: '/home/caoxinyu/UNet-based/Xformer-main/results/Difformer/DLS-NUC-100/15'
+    result_dir_tmp = os.path.join(args.result_dir, dataset, str(level)) 
+    os.makedirs(result_dir_tmp, exist_ok=True)
+
+    with torch.no_grad():
+        for file_ in tqdm(files):
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
+            ########### 第六步：添加噪声 ###########
+            #####################################################
+            img = np.float32(utils.load_gray_img(file_))/255. 
+
+            # 先转换为 torch.Tensor 并调整维度 [C, H, W]
+            img = torch.from_numpy(img).permute(2, 0, 1)  # HWC -> CHW
+
+            # TODO: 改变测试集中随机加噪的噪声种子对于最终测试结果应当是负面影响
+            # 使用新的加噪函数（内部会设置 torch 随机种子）
+            img = add_mixed_noise_tensor(img, noise_level=level, seed=0)
+
+            # 添加 batch 维度并移至 GPU [1, C, H, W]
+            input_ = img.unsqueeze(0).cuda()
+            ######################################################
+
+            #TODO 如果图像尺寸不是 8 的倍数，则进行填充（配合窗口大小）
+            # Padding in case images are not multiples of 8
+            h,w = input_.shape[2], input_.shape[3]
+            H,W = ((h+factor)//factor)*factor, ((w+factor)//factor)*factor
+            padh = H-h if h%factor!=0 else 0
+            padw = W-w if w%factor!=0 else 0
+            input_ = F.pad(input_, (0,padw,0,padh), 'reflect')
+            
+            ################################## TODO 注意Oformer返回的数组 ##################################
+            restored = model_restoration(input_)
+            
+            #TODO 去掉填充
+            # Unpad images to original dimensions 
+            restored = restored[:,:,:h,:w]
+
+            restored = torch.clamp(restored,0,1).cpu().detach().permute(0, 2, 3, 1).squeeze(0).numpy()
+
+            save_file = os.path.join(result_dir_tmp, os.path.split(file_)[-1])
+            utils.save_gray_img(save_file, img_as_ubyte(restored))
